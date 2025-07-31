@@ -1,0 +1,13 @@
+[package]
+name = "bitrepr"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+bitrepr-macros = { version = "0.1.0",  path = "macros" }
+
+[workspace]
+members = ["macros"]
+
+[profile.test]
+opt-level = 2
