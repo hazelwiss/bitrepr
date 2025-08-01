@@ -5,7 +5,7 @@ edition = "2024"
 description = "Traits and derives for packing/unpacking values into bits"
 repository = "https://github.com/hazelwiss/bitrepr"
 categories = ["compression", "emulators", "no-std"]
-keywords = ["minimal", "no_std", "macro", "utility", "bitfields"]
+keywords = ["minimal", "no_std", "utility", "bitfields"]
 license-file = "LICENSE"
 readme = "README.md"
 

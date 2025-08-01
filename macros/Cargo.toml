@@ -2,6 +2,12 @@
 name = "bitrepr-macros"
 version = "0.1.0"
 edition = "2024"
+description = "Macro crate for bitrepr"
+repository = "https://github.com/hazelwiss/bitrepr"
+categories = []
+keywords = ["macro"]
+license-file = "LICENSE"
+readme = "README.md"
 
 [lib]
 proc-macro = true
