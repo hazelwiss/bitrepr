@@ -109,6 +109,10 @@ fn parse(input: &DeriveInput, kind: Kind) -> syn::Result<proc_macro2::TokenStrea
         unsafe_: bool,
         pack_fn: Option<syn::Expr>,
         unpack_fn: Option<syn::Expr>,
+    }
+
+    #[derive(Default)]
+    struct SkippedFieldAttributes {
         default: Option<syn::Expr>,
         default_fn: Option<syn::Expr>,
     }
@@ -121,6 +125,8 @@ fn parse(input: &DeriveInput, kind: Kind) -> syn::Result<proc_macro2::TokenStrea
                 if let Some(attr) = get_attribute(&field.attrs) {
                     let mut skip = false;
                     let mut fattrs = FieldAttributes::default();
+                    let mut skip_fattrs =SkippedFieldAttributes::default();
+                    let mut added_field = false;
 
                     attr.parse_args_with(|input: ParseStream| {
                         loop {
@@ -131,7 +137,6 @@ fn parse(input: &DeriveInput, kind: Kind) -> syn::Result<proc_macro2::TokenStrea
                                 }
                             } else if let Ok(ident) = input.parse::<syn::Ident>() {
                                 if ident == "skip" {
-                                    skipped_fields.push(member.clone());
                                     skip = true;
                                 } else if ident == "unwrap" {
                                     fattrs.unwrap = true; 
@@ -140,9 +145,9 @@ fn parse(input: &DeriveInput, kind: Kind) -> syn::Result<proc_macro2::TokenStrea
                                 } else if ident == "unpack_fn" {
                                     fattrs.unpack_fn = Some(input.parse()?);
                                 } else if ident == "default" {
-                                    fattrs.default = Some(input.parse()?);
+                                    skip_fattrs.default = Some(input.parse()?);
                                 } else if ident == "default_fn" {
-                                    fattrs.default_fn = Some(input.parse()?);
+                                    skip_fattrs.default_fn = Some(input.parse()?);
                                 } else {
                                     return Err(
                                         syn::Error::new(
@@ -207,7 +212,10 @@ fn parse(input: &DeriveInput, kind: Kind) -> syn::Result<proc_macro2::TokenStrea
                                 };
 
                                 if skip {
-                                    return Err(syn::Error::new(span, "a range is given to a field with the skip attribute"));
+                                    return Err(syn::Error::new(attr.span(), "a range is given to a field with the skip attribute"));
+                                }
+                                if skip_fattrs.default.is_some() || skip_fattrs.default_fn.is_some() {
+                                    return Err(syn::Error::new(attr.span(), "default values cannot be specified in a field without `skip`"));
                                 }
                                 if ranges.check_range(start, end) {
                                     return Err(syn::Error::new(span, "range collides with previously created range"));
@@ -216,6 +224,7 @@ fn parse(input: &DeriveInput, kind: Kind) -> syn::Result<proc_macro2::TokenStrea
                                     return Err(syn::Error::new(attr.span(), "unwrap and unsafe properties are mutually exclusive"));
                                 }
 
+                                added_field |= true;
                                 fields.push((
                                     field.span(),
                                     fattrs,
@@ -234,11 +243,20 @@ fn parse(input: &DeriveInput, kind: Kind) -> syn::Result<proc_macro2::TokenStrea
                                 ));
                             }
 
-                            return if input.is_empty() {
+                            if skip {
+                                if skip_fattrs.default.is_some() && skip_fattrs.default_fn.is_some() {
+                                    return Err(syn::Error::new(attr.span(), "cannot specify a default expression and function at the same time"));
+                                }
+                                skipped_fields.push((skip_fattrs, member.clone()));
+                            }
+
+                            return if input.is_empty() && (skip  || added_field ) {
                                 Ok(())
                             } else {
                                 Err(syn::Error::new(input.span(), "invalid attribute, \
-                                    expected a comma seperated list of values"))
+                                    expected a comma seperated list of values. See crate \
+                                    root documenation for more details on correct attribute \
+                                    syntax"))
                             }
                         }
                     })?;
@@ -320,7 +338,16 @@ fn parse(input: &DeriveInput, kind: Kind) -> syn::Result<proc_macro2::TokenStrea
                     }
                 )
             }).chain(
-                skipped_fields.iter().map(|member| quote!(#member: ::core::default::Default::default()))
+                skipped_fields.iter().map(|(attr, member)| {
+                    let f = if let Some(d) = &attr.default {
+                        d.to_token_stream()
+                    } else if let Some(d) = &attr.default_fn {
+                        quote!((#d)())
+                    } else {
+                        quote!(::core::default::Default::default())
+                    };
+                    quote!(#member: #f)
+                })
             );
 
             let impl_bitrepr = quote!(

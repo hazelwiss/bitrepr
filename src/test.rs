@@ -996,3 +996,59 @@ fn test_skip() {
         })
     )
 }
+
+#[test]
+fn defaults_expr() {
+    #[derive(BitPack, PartialEq, Eq, Debug)]
+    #[bitpack(u64)]
+    struct Skip {
+        #[bitpack(..=31)]
+        field: u32,
+        #[bitpack(skip, default 0x1111_1111)]
+        skip: u32,
+    }
+
+    assert_eq!(
+        Skip {
+            field: u32::MAX,
+            skip: 0x1111_1111,
+        },
+        Skip::unpack(u64::MAX)
+    );
+
+    assert_eq!(
+        0xffffffff,
+        BitPack::pack(&Skip {
+            field: u32::MAX,
+            skip: u32::MAX
+        })
+    )
+}
+
+#[test]
+fn defaults_fn() {
+    #[derive(BitPack, PartialEq, Eq, Debug)]
+    #[bitpack(u64)]
+    struct Skip {
+        #[bitpack(..=31)]
+        field: u32,
+        #[bitpack(skip, default_fn || 0x2222_1111)]
+        skip: u32,
+    }
+
+    assert_eq!(
+        Skip {
+            field: u32::MAX,
+            skip: 0x2222_1111
+        },
+        Skip::unpack(u64::MAX)
+    );
+
+    assert_eq!(
+        0xffffffff,
+        BitPack::pack(&Skip {
+            field: u32::MAX,
+            skip: u32::MAX
+        })
+    )
+}
