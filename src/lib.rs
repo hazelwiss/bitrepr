@@ -46,8 +46,7 @@ pub trait TryBitPack: BitRepr + Sized {
     /// Packs a value of `Self` into its bits representable format.
     fn pack(&self) -> Self::Repr;
 
-    /// Attempts to convert a bit representation of `Self` into an instance of `Self`. Returns [None](core::option::Option::None)
-    /// on failure.
+    /// Attempts to convert a bit representation of `Self` into an instance of `Self`. Returns [None] on failure.
     fn try_unpack(repr: Self::Repr) -> Option<Self>;
 }
 

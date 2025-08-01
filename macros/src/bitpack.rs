@@ -129,24 +129,38 @@ fn parse(input: &DeriveInput, kind: Kind) -> syn::Result<proc_macro2::TokenStrea
                     let mut added_field = false;
 
                     attr.parse_args_with(|input: ParseStream| {
+                        macro_rules! duplicate_opt {
+                            ($cond:expr, $opt:literal) => {
+                                if $cond {
+                                    return Err(syn::Error::new(field.span(), concat!(concat!("duplicate option '", $opt), "'.")));
+                                }
+                            };
+                        }
                         loop {
                             if input.parse::<syn::Token![unsafe]>().is_ok() {
+                                duplicate_opt!(fattrs.unsafe_, "unsafe");
                                 fattrs.unsafe_ = true;
                                 if input.parse::<syn::Token![,]>().is_ok() {
                                     continue;
                                 }
                             } else if let Ok(ident) = input.parse::<syn::Ident>() {
                                 if ident == "skip" {
+                                    duplicate_opt!(skip, "skip");
                                     skip = true;
                                 } else if ident == "unwrap" {
+                                    duplicate_opt!(fattrs.unwrap, "unwrap");
                                     fattrs.unwrap = true; 
                                 } else if ident == "pack_fn" {
+                                    duplicate_opt!(fattrs.pack_fn.is_some(), "pack_fn");
                                     fattrs.pack_fn = Some(input.parse()?);
                                 } else if ident == "unpack_fn" {
+                                    duplicate_opt!(fattrs.unpack_fn.is_some(), "unpack_fn");
                                     fattrs.unpack_fn = Some(input.parse()?);
                                 } else if ident == "default" {
+                                    duplicate_opt!(skip_fattrs.default.is_some(), "default");
                                     skip_fattrs.default = Some(input.parse()?);
                                 } else if ident == "default_fn" {
+                                    duplicate_opt!(skip_fattrs.default_fn.is_some(), "default_fn");
                                     skip_fattrs.default_fn = Some(input.parse()?);
                                 } else {
                                     return Err(
