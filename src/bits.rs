@@ -30,19 +30,23 @@ macro_rules! impl_conv {
         impl Bits<$repr> for $ty {
             #[inline(always)]
             fn extract<const START: usize, const END: usize>(self) -> $repr {
-                assert!(START < size_of::<Self>() * 8);
-                assert!(END < size_of::<Self>() * 8);
-                assert!(START <= END);
-                assert!(END - START < size_of::<$repr>() * 8);
+                const {
+                    assert!(START < size_of::<Self>() * 8);
+                    assert!(END < size_of::<Self>() * 8);
+                    assert!(START <= END);
+                    assert!(END - START < size_of::<$repr>() * 8);
+                }
                 ((self >> START) & (1 as $ty).unbounded_shl((END + 1 - START) as u32).wrapping_sub(1)) as $repr
             }
 
             #[inline(always)]
             fn insert<const START: usize, const END: usize>(&mut self, bits: $repr) {
-                assert!(START < size_of::<Self>() * 8);
-                assert!(END < size_of::<Self>() * 8);
-                assert!(START <= END);
-                assert!(END - START < size_of::<Self>() * 8);
+                const {
+                    assert!(START < size_of::<Self>() * 8);
+                    assert!(END < size_of::<Self>() * 8);
+                    assert!(START <= END);
+                    assert!(END - START < size_of::<Self>() * 8);
+                }
                 let mask = !((1 << START) - 1) & (1 as $ty).unbounded_shl((END + 1) as u32).wrapping_sub(1);
                 let bits = bits as $ty;
                 *self &= !mask;
