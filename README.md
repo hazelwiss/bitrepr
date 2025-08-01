@@ -177,8 +177,8 @@ struct Type {
 #[bitpack(u32)]
 struct Unpacking {
   /// Using our custom function handler, we can convert into char without panic or unsafe shenanigans.
-  #[bitpack(unpack_fn |value| char::from_u32(*value).unwrap_or(char::REPLACEMENT_CHARACTER), ..)]
-  ch: char,
+  #[bitpack(unpack_fn |value| char::from_u32(value).unwrap_or(char::REPLACEMENT_CHARACTER) as u32, ..)]
+  ch: u32,
 }
 
 #[derive(BitPack)]
@@ -186,7 +186,7 @@ struct Unpacking {
 struct Packing {
   /// Using our custom function handler, we can convert into char without panic or unsafe shenanigans.
   #[bitpack(pack_fn |value| *value as u16 as u32, ..)]
-  ch: char,
+  ch: u32,
 }
 
 #[derive(BitPack)]
@@ -195,7 +195,7 @@ struct Both {
   /// Both a pack and unpack method may be provided for a single field.
   #[bitpack(
     pack_fn |value| *value as u16 as u32,
-    unpack_fn |value| char::from_u32(*value).unwrap_or(char::REPLACEMENT_CHARACTER),
+    unpack_fn |value| char::from_u32(value).unwrap_or(char::REPLACEMENT_CHARACTER),
     ..
   )]
   ch: char,
@@ -205,8 +205,8 @@ there is no requirement to use closures.
 ```
 # use bitrepr::BitPack;
 
-fn unpack(value: u32) -> char {
-  char::from_u32(*value).unwrap_or(char::REPLACEMENT_CHARACTER)
+fn unpack(value: u32) -> u32 {
+  char::from_u32(value).unwrap_or(char::REPLACEMENT_CHARACTER) as u32
 }
 
 #[derive(BitPack)]
@@ -214,7 +214,7 @@ fn unpack(value: u32) -> char {
 struct Unpacking {
   /// This time we specify our handler with just a function path.
   #[bitpack(unpack_fn unpack, ..)]
-  ch: char,
+  ch: u32,
 }
 ```
 
@@ -229,13 +229,13 @@ struct Skip {
   /// If a field is skipped, it will not be packed into the bit representation.
   /// However, it will require that the field derives Default.
   #[bitpack(skip)]
-  skip0: u32
+  skip0: u32,
   /// ... or, that the field is given a defualt expression to use.
   #[bitpack(skip, default 1)]
-  skip1: u32
+  skip1: u32,
   /// ... or, that the field is given a defualt function to use.
   /// Is not required to be a closure.
   #[bitpack(skip, default_fn || 2)]
-  skip2: u32
+  skip2: u32,
 }
 ```
