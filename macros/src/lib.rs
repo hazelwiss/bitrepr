@@ -1,5 +1,10 @@
 mod bitpack;
 
+#[proc_macro_derive(UnsafeBitPack, attributes(bitpack))]
+pub fn unsafe_bitpack(ts: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    bitpack::unsafe_bitpack2(ts)
+}
+
 #[proc_macro_derive(TryBitPack, attributes(bitpack))]
 pub fn try_bitpack(ts: proc_macro::TokenStream) -> proc_macro::TokenStream {
     bitpack::try_bitpack2(ts)

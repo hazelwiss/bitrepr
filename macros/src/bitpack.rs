@@ -1,5 +1,5 @@
 use proc_macro2::Ident;
-use quote::{quote, quote_spanned};
+use quote::{quote, quote_spanned, ToTokens};
 use syn::{DeriveInput, parse::ParseStream, spanned::Spanned};
 
 const ATTR_STR: &str = "bitpack";
@@ -25,11 +25,34 @@ fn parse_as_unsigned_int(expr: &syn::Expr) -> syn::Result<usize> {
     }
 }
 
-fn parse(input: &DeriveInput, is_try: bool) -> syn::Result<proc_macro2::TokenStream> {
-    let trait_path = if is_try {
-        quote!(::bitrepr::TryBitPack)
+#[derive(Clone, Copy)]
+enum Kind {
+    Unsafe,
+    Try,
+    Normal,
+}
+
+impl Kind {
+    fn is_try(self) -> bool {
+        matches!(self, Self::Try)
+    }
+
+    fn is_unsafe(self) -> bool {
+        matches!(self, Self::Unsafe)
+    }
+}
+
+fn parse(input: &DeriveInput, kind: Kind) -> syn::Result<proc_macro2::TokenStream> {
+    let repr_trait = quote!(::bitrepr::BitRepr);
+    let unsafe_trait = quote!(::bitrepr::UnsafeBitPack);
+    let try_trait =  quote!(::bitrepr::TryBitPack);
+    let trait_ = quote!(::bitrepr::BitPack);
+    let self_trait = if kind.is_unsafe() {
+        unsafe_trait.clone()
+    } else if kind.is_try() {
+        try_trait.clone()
     } else {
-        quote!(::bitrepr::BitPack)
+        trait_.clone()
     };
 
     let mut repr_ty: Option<syn::Path> = None;
@@ -80,6 +103,16 @@ fn parse(input: &DeriveInput, is_try: bool) -> syn::Result<proc_macro2::TokenStr
 
     let mut ranges = Ranges(vec![]);
 
+    #[derive(Default)]
+    struct FieldAttributes {
+        unwrap: bool,
+        unsafe_: bool,
+        pack_fn: Option<syn::Expr>,
+        unpack_fn: Option<syn::Expr>,
+        default: Option<syn::Expr>,
+        default_fn: Option<syn::Expr>,
+    }
+
     match &input.data {
         syn::Data::Struct(data_struct) => {
             let mut fields = vec![];
@@ -87,19 +120,36 @@ fn parse(input: &DeriveInput, is_try: bool) -> syn::Result<proc_macro2::TokenStr
             for (field, member) in data_struct.fields.iter().zip(data_struct.fields.members()) {
                 if let Some(attr) = get_attribute(&field.attrs) {
                     let mut skip = false;
+                    let mut fattrs = FieldAttributes::default();
 
                     attr.parse_args_with(|input: ParseStream| {
                         loop {
-                            if let Ok(ident) = input.parse::<syn::Ident>() {
+                            if input.parse::<syn::Token![unsafe]>().is_ok() {
+                                fattrs.unsafe_ = true;
+                                if input.parse::<syn::Token![,]>().is_ok() {
+                                    continue;
+                                }
+                            } else if let Ok(ident) = input.parse::<syn::Ident>() {
                                 if ident == "skip" {
                                     skipped_fields.push(member.clone());
                                     skip = true;
+                                } else if ident == "unwrap" {
+                                    fattrs.unwrap = true; 
+                                } else if ident == "pack_fn" {
+                                    fattrs.pack_fn = Some(input.parse()?);
+                                } else if ident == "unpack_fn" {
+                                    fattrs.unpack_fn = Some(input.parse()?);
+                                } else if ident == "default" {
+                                    fattrs.default = Some(input.parse()?);
+                                } else if ident == "default_fn" {
+                                    fattrs.default_fn = Some(input.parse()?);
                                 } else {
                                     return Err(
                                         syn::Error::new(
                                             ident.span(),
                                             "invalid identifier in attribute. \
-                                            Expected either 'skip' or 'try', but got '{ident}'"
+                                            Expected either 'skip', 'unwrap', 'unsafe', 'pack_fn', 'unpack_fn' \
+                                            'default' or 'default_fn' but got '{ident}'"
                                         )
                                     );
                                 }
@@ -145,10 +195,8 @@ fn parse(input: &DeriveInput, is_try: bool) -> syn::Result<proc_macro2::TokenStr
                                             },
                                         };
 
-                                        if let Some(end) = end {
-                                            if end < start {
-                                                return Err(syn::Error::new(span, "range end is below range start"));
-                                            }
+                                        if let Some(end) = end && end < start {
+                                            return Err(syn::Error::new(span, "range end is below range start"));
                                         }
 
                                         (start, end)
@@ -164,8 +212,13 @@ fn parse(input: &DeriveInput, is_try: bool) -> syn::Result<proc_macro2::TokenStr
                                 if ranges.check_range(start, end) {
                                     return Err(syn::Error::new(span, "range collides with previously created range"));
                                 }
+                                if fattrs.unwrap && fattrs.unsafe_ {
+                                    return Err(syn::Error::new(attr.span(), "unwrap and unsafe properties are mutually exclusive"));
+                                }
+
                                 fields.push((
                                     field.span(),
+                                    fattrs,
                                     member.clone(),
                                     &field.ty,
                                     quote!(#start),
@@ -177,8 +230,7 @@ fn parse(input: &DeriveInput, is_try: bool) -> syn::Result<proc_macro2::TokenStr
                             } else {
                                 return Err(syn::Error::new(
                                     attr.span(),
-                                    "expected attribute arguments to contain either a bit position, bit range or 'skip', \
-                                     Look at the examples showcased in the crate root documentation."
+                                    "expected valid attribute. Look in the crate root documentation for more details."
                                 ));
                             }
 
@@ -200,10 +252,10 @@ fn parse(input: &DeriveInput, is_try: bool) -> syn::Result<proc_macro2::TokenStr
 
             let acc_ident = Ident::new("repr", proc_macro2::Span::call_site());
             let ty_ident = &input.ident;
-            let ty_size = quote!({::core::mem::size_of::<#ty_ident>() * 8});
-            let static_asserts = fields.iter().map(|(span, _, ty, start, end)| {
+            let static_asserts = fields.iter().map(|(span, _, _, ty, start, end)| {
                 let span = *span;
-                let field_ty_size = quote!({::core::mem::size_of::<<#ty as #trait_path>::Repr>() * 8});
+                let ty_size = quote!({::core::mem::size_of::<<#ty_ident as #repr_trait>::Repr>() * 8});
+                let field_ty_size = quote!({::core::mem::size_of::<<#ty as #repr_trait>::Repr>() * 8});
                 quote_spanned!(span=>
                     const _: () = assert!(#start <= #end, "start is above or equal to end");
                     const _: () = assert!(#start < #ty_size, "start exceeds the representation type size");
@@ -212,28 +264,99 @@ fn parse(input: &DeriveInput, is_try: bool) -> syn::Result<proc_macro2::TokenStr
                 )
             });
 
-            let pack_fields = fields.iter().map(|(_, member, _, start, end)| {
-                quote!(::bitrepr::bits::insert::<#repr_ty, _, #start, #end>(&mut #acc_ident, &#trait_path::pack(&self.#member)))
+            let pack_fields = fields.iter().map(|(_, attrs, member, ty, start, end)| {
+                let f = if attrs.unwrap || kind.is_try() {
+                    quote!(<#ty as #try_trait>::pack)
+                } else if attrs.unsafe_ || kind.is_unsafe() {
+                    quote!(<#ty as #unsafe_trait>::pack)
+                } else if let Some(pack_fn) = &attrs.pack_fn {
+                    quote!(#pack_fn)
+                } else {
+                    quote!(<#ty as #self_trait>::pack)
+                };
+
+                quote!(
+                    {
+                        let f: fn(&#ty) -> <#ty as #repr_trait>::Repr = #f;
+                        ::bitrepr::bits::insert::<#repr_ty, _, #start, #end>(&mut #acc_ident, &f(&self.#member))
+                    }
+                )
             });
-            let unpack_fields = fields.iter().map(|(_, member, _, start, end)| {
-                quote!(#member: #trait_path::unpack(::bitrepr::bits::extract::<#repr_ty, _, _, #start, #end>(bits)))
+
+            let unpack_fields = fields.iter().map(|(_, attrs, member, ty, start, end)| {
+                let mut unsafe_kw = None;
+                let mut try_ = None;
+                let mut unwrap = None;
+                let mut f;
+                let f_ty;
+                if attrs.unwrap {
+                    f = quote!(<#ty as #try_trait>::try_unpack);
+                    f_ty = quote!(fn(<#ty as #repr_trait>::Repr) -> Option<#ty>);
+                    unwrap = Some(quote!(.unwrap()));
+                } else if attrs.unsafe_ {
+                    f = quote!(<#ty as #unsafe_trait>::unsafe_unpack);
+                    f_ty = quote!(unsafe fn(<#ty as #repr_trait>::Repr) -> #ty);
+                    unsafe_kw = Some(quote!(unsafe));
+                } else if kind.is_unsafe() {
+                    f = quote!(<#ty as #unsafe_trait>::unsafe_unpack);
+                    f_ty = quote!(unsafe fn(<#ty as #repr_trait>::Repr) -> #ty);
+                } else if kind.is_try() {
+                    f = quote!(<#ty as #try_trait>::try_unpack);
+                    f_ty = quote!(fn(<#ty as #repr_trait>::Repr) -> Option<#ty>);
+                    try_ = Some(quote!(?));
+                } else {
+                    f = quote!(<#ty as #trait_>::unpack);
+                    f_ty = quote!(fn(<#ty as #repr_trait>::Repr) -> #ty);
+                }
+
+                if let Some(f_) = &attrs.unpack_fn {
+                    f = f_.to_token_stream();
+                }
+
+                quote!(
+                    #member: #unsafe_kw {
+                        let f: #f_ty = #f;
+                        f(::bitrepr::bits::extract::<#repr_ty, _, _, #start, #end>(bits)) #try_ #unwrap
+                    }
+                )
             }).chain(
-                skipped_fields.iter().map(|member| quote!(#member: ::core::default::Default::default()))      
-            );
-            let unpack_fields_try = fields.iter().map(|(_, member, _, start, end)| {
-                quote!(#member: #trait_path::try_unpack(::bitrepr::bits::extract::<#repr_ty, _, _, #start, #end>(bits))?)
-            }).chain(
-                skipped_fields.iter().map(|member| quote!(#member: ::core::default::Default::default()))      
+                skipped_fields.iter().map(|member| quote!(#member: ::core::default::Default::default()))
             );
 
-            Ok(if is_try {
+            let impl_bitrepr = quote!(
+                #[automatically_derived]
+                impl #repr_trait for #ty_ident {
+                    type Repr = #repr_ty;
+                }
+            );
+
+            Ok(if kind.is_unsafe() {
                 quote!(
                     #(#static_asserts)*
+                    #impl_bitrepr
 
                     #[automatically_derived]
-                    impl #trait_path for #ty_ident {
-                        type Repr = #repr_ty;
+                    impl #self_trait for #ty_ident {
+                        fn pack(&self) -> #repr_ty {
+                            let mut #acc_ident: #repr_ty = ::core::default::Default::default();
+                            #(#pack_fields;)*
+                            #acc_ident
+                        }
 
+                        unsafe fn unsafe_unpack(bits: #repr_ty) -> Self {
+                            Self {
+                                #(#unpack_fields),*
+                            }
+                        }
+                    }
+                )
+            } else if kind.is_try() {
+                quote!(
+                    #(#static_asserts)*
+                    #impl_bitrepr
+
+                    #[automatically_derived]
+                    impl #self_trait for #ty_ident {
                         fn pack(&self) -> #repr_ty {
                             let mut #acc_ident: #repr_ty = ::core::default::Default::default();
                             #(#pack_fields;)*
@@ -242,7 +365,7 @@ fn parse(input: &DeriveInput, is_try: bool) -> syn::Result<proc_macro2::TokenStr
 
                         fn try_unpack(bits: #repr_ty) -> Option<Self> {
                             Some(Self {
-                                #(#unpack_fields_try),*
+                                #(#unpack_fields),*
                             })
                         }
                     }
@@ -250,11 +373,10 @@ fn parse(input: &DeriveInput, is_try: bool) -> syn::Result<proc_macro2::TokenStr
             } else {
                 quote!(
                     #(#static_asserts)*
+                    #impl_bitrepr
 
                     #[automatically_derived]
-                    impl #trait_path for #ty_ident {
-                        type Repr = #repr_ty;
-
+                    impl #self_trait for #ty_ident {
                         fn pack(&self) -> #repr_ty {
                             let mut #acc_ident: #repr_ty = ::core::default::Default::default();
                             #(#pack_fields;)*
@@ -284,7 +406,7 @@ fn parse(input: &DeriveInput, is_try: bool) -> syn::Result<proc_macro2::TokenStr
 pub(crate) fn bitpack2(ts: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let input: DeriveInput = syn::parse_macro_input!(ts);
 
-    parse(&input, false)
+    parse(&input, Kind::Normal)
         .unwrap_or_else(|e| e.into_compile_error())
         .into()
 }
@@ -292,7 +414,15 @@ pub(crate) fn bitpack2(ts: proc_macro::TokenStream) -> proc_macro::TokenStream {
 pub(crate) fn try_bitpack2(ts: proc_macro::TokenStream) -> proc_macro::TokenStream {
     let input: DeriveInput = syn::parse_macro_input!(ts);
 
-    parse(&input, true)
+    parse(&input, Kind::Try)
+        .unwrap_or_else(|e| e.into_compile_error())
+        .into()
+}
+
+pub(crate) fn unsafe_bitpack2(ts: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    let input: DeriveInput = syn::parse_macro_input!(ts);
+
+    parse(&input, Kind::Unsafe)
         .unwrap_or_else(|e| e.into_compile_error())
         .into()
 }

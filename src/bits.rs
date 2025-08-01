@@ -19,6 +19,7 @@ impl<T, Y> IntoBits<Y> for T
 where
     Y: FromBits<T>,
 {
+    #[inline(always)]
     fn into(&self) -> Y {
         Y::from(self)
     }
